@@ -1,0 +1,235 @@
+---
+title: "DSC5101 Project Alternative Modelling approach"
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+## Loading Libraries
+```{r, warning=FALSE}
+library(car)
+library(MASS)
+library(caret)
+```
+
+## Preprocessing
+
+```{r}
+# read in data
+df <- read.csv("C:/Users/Shane/Documents/NUS Documents/NUS Year 4/Project1Data.csv")
+
+# data cleaning
+# transform year and month into numeric form for use in regression
+df$time <- df$year + df$month/12
+
+
+# test and training set
+# we could use k fold cross validation here, but because the data is so small, a simple train test split should be more than sufficient.
+set.seed(123)
+sample <- sample(c(TRUE,FALSE),nrow(df),prob = c(0.75,0.25),replace = TRUE)
+
+data.train <- df[sample, ]
+data.test<- df[!sample,]
+
+```
+
+## Stage 1
+
+For the creation for our models in the section, we assume the simple linear forms for both demand and supply. This can be rearranged to yield a simple linear forecasting model for price, that we use as our baseline. 
+
+We begin by analysing the correlation of our exogeneous variables. Removing highly correlated predictors is the first step in building a good model.
+
+```{r}
+# VARIABLE SELECTION METHOD
+# test correlation
+cor(df[c(4:8, 13:15)])
+
+```
+
+We can see that a large number of variables (such as income and oprice) correlate almost perfectly. As such, it makes sense to only consider a smaller number of these variables. For the sake of using this price forecast in our stage 2 regression, we will use one supply side and one demand side variable.
+Incidentally, these two variable have a relatively low correlation with each other, and combined have a very high correlation with all the other exogeneous factors
+
+Our regression for our price model is then as follows:
+
+```{r}
+price.model <- lm(log(cprice) ~ bprice + oprice + q1 + q2 + q3, data = data.train)
+
+# view performance of the model
+# summary(price.model)
+
+```
+
+We can see that there is some room for improvement. Plotting our price against our instrumental variables here shows that there may be a non-linear relationship between cprice and oprice.
+```{r}
+# test distribution of variables
+scatterplotMatrix(df[c(5,7,13)])
+```
+
+Hence, we introduce a non-linear term into our model. 
+
+```{r}
+# Hence, try non linear model with variables earlier identified
+price.log.model <- lm(log(cprice) ~ bprice + oprice + I(oprice^2) + q1 + q2 + q3, data = data.train)
+
+# view model performance again
+# summary(price.log.model)
+
+```
+
+
+Once we have identified all our relevant predictors, we can then run something like stepwise regression that allows us to automatically select the best combination of these predictors.
+
+```{r}
+# improve model
+# we use stepAIC here to automatically find the best model from the provided variables
+stepped.model <- stepAIC(price.log.model, direction="both")
+# summary(stepped.model)
+```
+
+Although it has been commented out for the sake of brevity, we do assess each model's performance individually, before selecting the best performing one to be our final choice. This is later used on the test set to assess whether the model chosen is robust.
+
+```{r}
+# select price model
+price.final <- stepped.model
+
+summary(price.final)
+```
+
+
+Finally, it is necessary to test how well this model generalizes to the test data that we have earlier partitioned. 
+
+```{r}
+
+# test generalizability to test data
+price.test <- predict(price.final, newdata = data.test)
+price.test.residuals <- log(data.test$cprice) - price.test
+sqrt(mean(price.test.residuals^2))
+
+```
+
+
+
+## Stage 2
+
+We add the predicted price back into our dataframe for use in the secondary regressions.
+
+```{r}
+# predict the price and add back to dataframe
+df$predprice <- exp(predict(price.final, newdata = df))
+
+# recreate splits using same partition (to add predicted price)
+data.train <- df[sample, ]
+data.test<- df[!sample,]
+
+```
+
+### Demand Function
+Like earlier, we begin with the simple linear model as our baseline comparison, and then attempt to improve the model by studying potential parameter interactions. However, in this case, we can see that despite attempting to add higher order terms, our models tend to converge to the same ideal case. 
+
+```{r}
+# naive linear function
+demand1 <- lm(qu ~ predprice + tprice + oprice + incom + q1 + q2 + q3 + time, data = data.train)
+
+# like earlier, we have seen that the instrumental variables tprice, oprice and income are highly correlated. 
+# we can likely keep only one and remove the rest
+# this corresponds to our stepAIC result.
+# summary(demand1)
+
+stepped.demand <- stepAIC(demand1, direction="both")
+# summary(stepped.demand)
+
+# see variables distribution for insights
+scatterplotMatrix(df[c(4,5,6,13,14,15,16)])
+
+# We could potentially consider that the interaction between the price of coffee and its substitue is important for prediction, so
+# we include this here.
+# Add interaction terms
+demand2 <- lm(qu ~ predprice*tprice + q1 + q2 + q3 + time, data = data.train)
+# summary(demand2)
+
+# we comment out some unused stepAIC functions for the sake of brevity
+# stepped.demand2 <- stepAIC(demand2, direction="both")
+# summary(stepped.demand2)
+# but selection shows that it is not valuable as a predictor
+
+
+# we can test if perhaps there is an exponential relationship to consider
+# add quadratic terms
+demand3 <- lm(qu ~ predprice + tprice + q1 + q2 + q3 + time + I(predprice^3) + q1 + q2 + q3, data = data.train)
+# summary(demand3)
+
+# stepped.demand3 <- stepAIC(demand3, direction="both")
+# summary(stepped.demand3)
+
+```
+
+```{r}
+# Select our final demand model
+demand.final <- stepped.demand
+
+summary(demand.final)
+
+# test generalizability to test data
+demand.test <- predict(demand.final, newdata = data.test)
+demand.test.residuals <- data.test$qu - demand.test
+sqrt(mean(demand.test.residuals^2))
+
+
+```
+
+### Supply Side
+
+```{r}
+# naive linear function
+supply1 <- lm(qu ~ predprice + oprice + bprice + wprice + q1 + q2 + q3 + time, data = data.train)
+
+# summary(supply1)
+stepped.supply <- stepAIC(supply1, direction="both")
+# summary(stepped.supply)
+```
+
+```{r}
+# Select our final supply model
+supply.final <- stepped.supply
+
+summary(supply.final)
+
+# test generalizability to test data
+supply.test <- predict(demand.final, newdata = data.test)
+supply.test.residuals <- data.test$qu - supply.test
+sqrt(mean(supply.test.residuals^2))
+
+```
+
+
+### Hausmann Test
+
+```{r}
+
+# isolate residuals for the whole data frame
+demand.residuals <- df$qu - predict(demand.final, newdata = df)
+supply.residuals <- df$qu - predict(supply.final, newdata = df)
+
+# test instruments
+test.demand <- lm(demand.residuals ~ bprice + I(oprice^2), data = df)
+test.supply <- lm(supply.residuals ~ bprice + I(oprice^2), data = df)
+
+summary(test.demand)
+summary(test.supply)
+```
+
+We use the r-squared values respectively to get the Hausmann test statistic.
+
+```{r}
+hausmann.demand <- pchisq(-0.02138  * (84 - 3), 1, lower.tail = FALSE)
+hausmann.supply <- pchisq(-0.0011   * (84 - 3), 1, lower.tail = FALSE)
+
+hausmann.demand
+hausmann.supply
+
+```
+The high values indicate that we can accept the null hypothesis and that the instrumental variables are not correlated with the errors. 
+
+
+

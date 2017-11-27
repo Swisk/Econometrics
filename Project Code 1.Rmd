@@ -1,0 +1,202 @@
+---
+title: "DSC5101 Project"
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+## Loading Libraries
+```{r, warning=FALSE}
+library(ggplot2)
+library(lattice)
+library(car)
+library(MASS)
+library(caret)
+```
+
+## Preprocessing
+
+```{r}
+# read in data
+df <- read.csv("C:/Users/Shane/Documents/NUS Documents/NUS Year 4/Project1Data.csv")
+
+# data cleaning
+# transform year and month into numeric form for use in regression
+df$time <- df$year + df$month/12
+
+
+# test and training set
+# we could use k fold cross validation here, but because the data is so small, a simple train test split should be more than sufficient.
+set.seed(123)
+sample <- sample(c(TRUE,FALSE),nrow(df),prob = c(0.75,0.25),replace = TRUE)
+
+data.train <- df[sample, ]
+data.test<- df[!sample,]
+
+```
+
+## Naive OLS
+
+We wish to begin first by regressing the data points against q. Although there is endogeneity present, this nevertheless serves as a good basis for comparing our later models against.
+
+
+```{r}
+# Naive Model
+# demand model
+naive <- lm(qu ~ cprice + tprice + oprice + incom + q2 + q3 + q4 + time, data = data.train)
+
+summary(naive)
+
+# test generalizability of model to test data
+naive.test <- predict(naive, newdata = data.test)
+naive.test.residuals <- data.test$qu - naive.test
+sqrt(mean(naive.test.residuals^2))
+
+```
+
+## Two Stage Regression
+### Price Function Formulation
+
+Taking reference from the Bettendorf research paper, we see that there are provided equations for demand and supply. The derivation is available in the appendix, but we can rearrange these equations to form 3 different functions for price, depending on whether demand is assumed to be logarithmic, linear, or quadratic. We test each case below, and select the best performing system. 
+
+#### Logarithmic (lambda = 0)
+```{r}
+# logarithmic price equation
+# predict price with lamda = 0
+price.model0 <- lm(log(cprice) ~ log(oprice) + I(q2*log(oprice)) + I(q3*log(oprice)) + I(q4*log(oprice)) 
+                   + I(log(oprice)^2/log(tprice)) + I(log(oprice)^2/log(incom))
+                   + log(bprice) + I(q2*log(bprice)) + I(q3*log(bprice)) + I(q4*log(bprice))
+                   + I((log(oprice)*log(bprice))/log(tprice))
+                   + I((log(oprice)*log(bprice))/log(incom)) + log(wprice)
+                   + I(q2*log(wprice)) + I(q3*log(wprice)) + I(q4*log(wprice)) 
+                   + I((log(oprice)*log(wprice))/log(tprice))
+                   + I((log(oprice)*log(wprice))/log(incom)), data = data.train)
+
+summary(price.model0)
+
+```
+
+
+#### Linear (lambda = 1)
+```{r}
+# Linear price equation
+# predict price with lamda = 1
+price.model1 <- lm(log(cprice/oprice) ~ I(log(bprice/oprice)) 
+                   + I(log(wprice/oprice)) + q2 + q3 + q4
+                   + I(log(tprice/oprice)) + I(log(incom/oprice)), data = data.train)
+
+summary(price.model1)
+
+```
+
+#### Quadratic (lambda = 2)
+```{r}
+# Quadratic price equation
+# predict price with lamda = 2
+price.model2 <- lm(log(cprice) ~ log(oprice) + log(bprice) + log(wprice)
+                   + I(sqrt(log(bprice)*log(wprice))) + I(q2*log(oprice))
+                   + I(q3*log(oprice)) + I(q4*log(oprice))
+                   + I(sqrt(log(oprice)*log(tprice))) + I(sqrt(log(oprice)*log(incom))), data = data.train)
+
+summary(price.model2)
+
+```
+
+#### Model selection
+
+Based on the results of each model, we select the one with the best fit. Finally, we make sure that our selected model generalizes well, we test it on the test data set.
+
+```{r}
+
+# We select the quadratic model. This has the advantage of not only being having the best fit with the data, but also
+# being relatively simple.
+price.model.final <- price.model2
+
+
+# test generalizability to test data
+price.test <- predict(price.model.final, newdata = data.test)
+price.test.residuals <- log(data.test$cprice) - price.test
+
+# test using rmse
+sqrt(mean(price.test.residuals^2))
+```
+
+We can see that the model performs well even on untrained data.
+
+
+## Second Stage
+
+We add the predicted price back into our dataframe for use in the secondary regressions. 
+
+```{r}
+# predict the price and add back to dataframe
+df$predprice <- exp(predict(price.model.final, newdata = df))
+
+```
+
+It is important to note that for our later demand and supply models, the equations provided require us to divide some variables by log(oprice). This is a problem, as oprice takes on the value of 1 at some points, which causes a divide by 0 error. There are a number of ways to remedy this, but we have chosen to simply adjust the values of oprice upwards by a small amount. 
+
+```{r}
+# control for log(1) effects
+df$oprice <- df$oprice + 0.01
+
+```
+
+We then use the predicted price and substitue it back into our provided demand and supply equations to get a model that predicts both functions.
+
+```{r}
+# recreate splits using same partition (to add predicted price)
+data.train <- df[sample, ]
+data.test<- df[!sample,]
+```
+
+#### Demand Function
+
+
+```{r}
+demand <- lm(qu ~ I((log(predprice)/log(oprice))^2) + I(log(tprice)/log(oprice)) + q2 + q3 + q4 + I(log(incom)/log(oprice)), data = data.train)
+summary(demand)
+
+```
+
+
+#### Supply Function
+
+
+```{r}
+# TODO 
+supply <- lm(qu ~ I(log(bprice)/log(oprice)) + I(log(wprice)/log(oprice)) + I((log(predprice)/log(oprice))^2)) 
+
+
+```
+
+
+## Hausmann test
+
+```{r}
+# hausman test
+# isolate residuals for the whole data frame
+df$demand.residuals <- df$qu - predict(demand, newdata = df)
+
+
+
+
+hausman.test.demand <- lm(demand.residuals~log(oprice) + log(bprice) + log(wprice) + I(sqrt(log(bprice)*log(wprice))) + I(log(oprice)*sqrt(q2)) + I(log(oprice)*sqrt(q3)) + I(log(oprice)*sqrt(q4)) + I(sqrt(log(tprice)*log(oprice))) + I(sqrt(log(incom)*log(oprice))), data = df)
+
+summary(hausman.test.demand)
+```
+
+
+We use the r-squared values respectively to get the Hausmann test statistic.
+
+```{r}
+hausmann.demand <- pchisq(0.02165   * (84 - 10), 8, lower.tail = FALSE)
+#TODO hausmann.supply <- pchisq(-0.001209  * (84 - 3), 1, lower.tail = FALSE)
+
+hausmann.demand
+#hausmann.supply
+
+```
+
+The high values indicate that we can accept the null hypothesis and that the instrumental variables are not correlated with the errors. 

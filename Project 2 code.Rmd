@@ -1,0 +1,335 @@
+---
+title: "Project 2 code"
+author: "Wei Xu"
+date: "29 September 2017"
+output: html_document
+---
+
+## Loading Libraries
+```{r, warning=FALSE}
+library(readr)
+library(lfe)
+library(plm)
+library(plyr)
+library(ggplot2)
+library(MatchIt)
+library(lfe)
+library(ROCR)
+library(pROC)
+library(caret)
+library(data.table)
+```
+
+## Preprocessing
+
+```{r}
+# Load the data
+df <- read.csv('C:/Users/Shane/Documents/NUS Documents/NUS Year 4/DSC5101/DiD_data.csv')
+```
+
+## DiD full data modeling
+
+We first begin the modeling with full data set by controling control variables and fixed effect.
+
+```{r}
+# # Full sample, Without control variables, Without fixed effect
+# model1 <- plm(bhc_avgtradingratio ~ I(treat_3_b_avg*after_DFA_1), data = df)
+# summary(model1)
+# 
+# # Full sample, Without control variables, With fixed effect
+# model2 <- plm(bhc_avgtradingratio~I(treat_3_b_avg*after_DFA_1), data = df, index = c("rssd9001","rssd9999"), model = "within", effect = "twoways")
+# summary(model2) 
+# 
+# # Full sample, With control variables, With fixed effect
+# model3 <- plm(bhc_avgtradingratio~I(treat_3_b_avg*after_DFA_1) + dep_roa1 + dep_leverage + dep_lnassets + dep_creditrisk_total3 + dep_cir + dep_depositratio + dep_loans_REratio + dep_liquidity, data = df, index = c("rssd9001","rssd9999"), model = "within", effect = "twoways")
+# summary(model3)
+
+# replace with felm for faster running
+
+# Full sample, Without control variables, Without fixed effect
+model1 <- felm(bhc_avgtradingratio ~ treat_3_b_avg*after_DFA_1, data = df)
+summary(model1)
+
+# Full sample, Without control variables, With fixed effect
+model2 <- felm(bhc_avgtradingratio ~ treat_3_b_avg*after_DFA_1| rssd9001 + rssd9999  , data = df)
+summary(model2)
+
+# Full sample, With control variables, With fixed effect
+model3 <- felm(bhc_avgtradingratio ~ treat_3_b_avg*after_DFA_1 + dep_roa1 
+               + dep_leverage + dep_lnassets + dep_creditrisk_total3 + dep_cir 
+               + dep_depositratio + dep_loans_REratio + dep_liquidity 
+               + dep_cpp_bankquarter| rssd9001 + rssd9999  , data = df)
+summary(model3)
+
+
+```
+
+## Propensity Score Matching
+
+### Score matching logistic regression model selection
+```{r}
+# predictive modelling convention
+# split into train, validation and test
+# can be used to select best model for logistic regression part
+
+# remove missing rows of data
+df.nomiss <- na.omit(df)
+
+# select only the first quarter
+df.nomiss <- df.nomiss[df.nomiss$rssd9999 == '20040930',]
+
+set.seed(2134)
+sample <- sample(c(0,1,2),nrow(df.nomiss),prob = c(0.6,0.2,0.2),replace = TRUE)
+
+data.train <- df.nomiss[sample == 0,]
+data.validation <- df.nomiss[sample == 1,]
+data.test <- df.nomiss[sample == 2,]
+
+# we don't use average trading ratio as a predictor for obvious reasons
+# we also don't use bankcode
+propensity <- glm(treat_3_b_avg ~ rssd9999 + after_DFA_1 + dep_roa1 
+                  + dep_leverage + dep_lnassets + dep_creditrisk_total3 + dep_cir 
+                  + dep_depositratio + dep_loans_REratio + dep_liquidity 
+                  + dep_cpp_bankquarter, family = binomial, data = data.train)
+
+# see performance of model
+summary(propensity)
+
+data.validation$pred <- predict(propensity, newdata = data.validation, type = "response")
+perf <- prediction(data.validation$pred, data.validation$treat_3_b_avg)
+
+# plot ROC curve
+curve <- performance(perf, "prec", "rec")
+plot(curve)
+auc.perf <- performance(perf, measure = 'auc')
+auc.perf
+
+# auc is PERFECT
+
+# try another model for comparison
+propensity1 <- glm(treat_3_b_avg ~ rssd9999 + after_DFA_1 + dep_roa1*dep_lnassets*dep_creditrisk_total3 
+                  + dep_leverage + dep_cir 
+                  + dep_depositratio + dep_loans_REratio + dep_liquidity 
+                  + dep_cpp_bankquarter, family = binomial, data = data.train)
+
+# see performance of model
+summary(propensity1)
+
+data.validation$pred <- predict(propensity1, newdata = data.validation, type = "response")
+perf <- prediction(data.validation$pred, data.validation$treat_3_b_avg)
+
+# plot ROC curve
+curve <- performance(perf, "prec", "rec")
+plot(curve)
+auc.perf <- performance(perf, measure = 'auc')
+auc.perf
+
+# the precision recall curve is pretty weirdly shaped, but the auc is okay
+
+# try another model (again) for comparison
+propensity2 <- glm(treat_3_b_avg ~ after_DFA_1 + dep_lnassets + dep_lnassets*dep_creditrisk_total3 
+                   + dep_cir 
+                   + dep_depositratio + dep_loans_REratio 
+                   + dep_cpp_bankquarter, family = binomial, data = data.train)
+
+# see performance of model
+summary(propensity2)
+
+data.validation$pred <- predict(propensity2, newdata = data.validation, type = "response")
+perf <- prediction(data.validation$pred, data.validation$treat_3_b_avg)
+
+# plot ROC curve
+curve <- performance(perf, "prec", "rec")
+plot(curve)
+auc.perf <- performance(perf, measure = 'auc')
+auc.perf
+
+# once again the auc is perfect
+# has a lower AIC so this is a better model though
+
+# show performance just for completeness
+
+data.test$pred <- predict(propensity2, newdata = data.test, type = "response")
+perf <- prediction(data.test$pred, data.test$treat_3_b_avg)
+
+# plot ROC curve
+curve <- performance(perf, "prec", "rec")
+plot(curve)
+auc.perf <- performance(perf, measure = 'auc')
+auc.perf
+```
+
+### DiD matching
+
+#### select only the first quarter
+
+```{r}
+# use the same model selected above
+# remove rows with na's from dataframe for matching
+df.match <- df[df$rssd9999 == '20040930',]
+df.match <- na.omit(df.match)
+
+model.match <- matchit(treat_3_b_avg ~ after_DFA_1 + dep_lnassets + dep_lnassets*dep_creditrisk_total3 + dep_cir + dep_depositratio + dep_loans_REratio + dep_cpp_bankquarter, data = df.match, method = "nearest", ratio = 3)
+summary(model.match)
+
+df.matched <- match.data(model.match)
+df.matched.sample <- df[df$rssd9001 %in% df.matched$rssd9001,]
+
+# Matched sample, With control variables, With fixed effect
+model4 <- felm(bhc_avgtradingratio ~ treat_3_b_avg*after_DFA_1 + dep_roa1 
+               + dep_leverage + dep_lnassets + dep_creditrisk_total3 + dep_cir 
+               + dep_depositratio + dep_loans_REratio + dep_liquidity 
+               + dep_cpp_bankquarter| rssd9001 + rssd9999  , data = df.matched.sample)
+summary(model4)
+```
+
+#### Select only Second quarter
+
+```{r}
+df.match.Q2 <- df[df$rssd9999 == '20041231',]
+df.match.Q2 <- na.omit(df.match.Q2)
+
+model.match.Q2 <- matchit(treat_3_b_avg ~ after_DFA_1 + dep_lnassets + dep_lnassets*dep_creditrisk_total3 + dep_cir + dep_depositratio + dep_loans_REratio + dep_cpp_bankquarter, data = df.match.Q2, method = "nearest", ratio = 3)
+
+df.matched.Q2 <- match.data(model.match.Q2)
+df.matched.Q2.sample <- df[df$rssd9001 %in% df.match.Q2$rssd9001,]
+
+model5 <- felm(bhc_avgtradingratio ~ treat_3_b_avg*after_DFA_1 + dep_roa1 
+               + dep_leverage + dep_lnassets + dep_creditrisk_total3 + dep_cir 
+               + dep_depositratio + dep_loans_REratio + dep_liquidity 
+               + dep_cpp_bankquarter| rssd9001 + rssd9999  , data = df.matched.Q2.sample)
+summary(model5)
+```
+
+#### Randomly assign the treatment & control groups within first data set
+
+```{r}
+df.matched$treat_3_b_avg_random <- sample(df.matched$treat_3_b_avg)
+df.matched.random <- merge(df.matched.sample, df.matched, by = "rssd9001")
+
+model6 <- felm(bhc_avgtradingratio.x ~ treat_3_b_avg_random*after_DFA_1.x + dep_roa1.x + dep_leverage.x + dep_lnassets.x + dep_creditrisk_total3.x + dep_cir.x + dep_depositratio.x + dep_loans_REratio.x + dep_liquidity.x | rssd9001 + rssd9999.x, data = df.matched.random)
+summary(model6)
+```
+
+Selecting by first quarter with orignial treatment and control group gets the best model compared to other methods.
+
+## Placebo test
+
+```{r}
+# Same companys with matched sample, Same treatment group, Same control group, Different periods
+coefficient1 <- NULL
+i <- 1
+placebo.period <- c("20061231","20070331","20070630","20070930","20071231","20080331","20080630","20080930","20081231","20090331")
+
+df.matched.placebo.sample <- df.matched.sample
+while (i <= length(placebo.period)){
+        df.matched.placebo.sample$p <- as.numeric(df.matched.placebo.sample$rssd9999 < placebo.period[i])
+        model.placebo.period <- plm(bhc_avgtradingratio ~ I(treat_3_b_avg*p) + dep_roa1 + dep_leverage + dep_lnassets + dep_creditrisk_total3 + dep_cir + dep_depositratio + dep_loans_REratio + dep_liquidity, data = df.matched.placebo.sample, index = c("rssd9001","rssd9999"), model = "within", effect = "twoways")
+        coefficient1 <- cbind(coefficient1, model.placebo.period$coefficients[1])
+        i <- i + 1
+}
+hist(coefficient1, xlim = c(-0.03,0.04), col = "gray")
+abline(v = model4$coefficients[12], lty = 2)
+
+# Same companys with matched sample, Same period, Random treatment group & control group
+coefficient2 <- NULL
+n <- 1
+while (n <= 100){
+        df.matched$treat_3_b_avg_placebo <- sample(df.matched$treat_3_b_avg)
+        df.matched.placebo <- merge(df.matched.sample, df.matched, by = "rssd9001")
+        
+        model.placebo.group <- plm(bhc_avgtradingratio.x ~ I(treat_3_b_avg_placebo*after_DFA_1.x) + dep_roa1.x + dep_leverage.x + dep_lnassets.x + dep_creditrisk_total3.x + dep_cir.x + dep_depositratio.x + dep_loans_REratio.x + dep_liquidity.x, data = df.matched.placebo, index = c("rssd9001","rssd9999.x"), model = "within", effect = "twoways")
+        coefficient2 <- cbind(coefficient2, model.placebo.group$coefficients[1])
+        n <- n + 1
+}
+hist(coefficient2, xlim = c(-0.03,0.02), col = "gray")
+abline(v = model4$coefficients[12] , lty=2)
+```
+
+Both test results are not significant or negitive compared with our modeling results.
+
+## Verifing the baseline bias assumption
+
+```{r}
+# verify the predictive power of covariates in controlling baseline bias
+
+# select only the controls
+df.subset <- df[df$treat_3_b_avg == 0,]
+
+# encode time as factors for fixed effects
+# cannot include bank fixed effects as we are separating by bank
+df.subset$rssd9001 <- as.character(df.subset$rssd9001)
+df.subset$rssd9999 <- as.factor(df.subset$rssd9999)
+
+# split controls into group 1 and 2 randomly by bank
+# we assume bank fixed effects cancel out by random assignment
+
+sample <- sample(unique(df.subset$rssd9001))
+
+df.control1 <- df.subset[df.subset$rssd9001 %in% sample[1:length(sample)/2],]
+df.control2 <- df.subset[!df.subset$rssd9001 %in% sample[1:length(sample)/2],]
+
+# we manually code in fixed effects here because plm or felm doesn't allow us to make predictions easily
+# this model could of course be improved but that is not that important - important is how 
+# generalizable it is to the other controls
+# overfitting would be counterproductive
+control1predict <- lm(bhc_avgtradingratio ~ after_DFA_1 + dep_roa1 
+                            + dep_leverage + dep_lnassets + dep_creditrisk_total3 + dep_cir 
+                            + dep_depositratio + dep_loans_REratio + dep_liquidity 
+                            + dep_cpp_bankquarter + rssd9999, data = df.control1)
+
+summary(control1predict)
+control1predict$xlevels
+
+# adjusting levels because model is dumb at automatically detecting these
+control1predict$xlevels <- union(control1predict$xlevels, levels(df.control2$rsd9999))
+
+post_predict <- predict(control1predict, newdata = df.control2)
+newdataset <- data.frame(obs = df.control2$bhc_avgtradingratio, pred = post_predict)
+defaultSummary(newdataset)
+
+# relatively comparable r squared yay
+# both are really bad models though lul
+```
+
+## Continuous Variables
+```{r}
+# data preparation
+# create variable for degree of excess trading ratio
+# average exceed for period before rule implementation
+
+dt <- df[df$after_DFA_1 == 0,]
+dt <- data.table(dt)
+exceed <- dt[,list(bhc_exceed = mean(bhc_avgtradingratio, na.rm = TRUE)), by = rssd9001]
+exceed[,2] <- exceed[,2] - 0.03
+
+exceed <- as.data.frame(as.matrix(exceed))
+exceed$bhc_exceed <- sapply(exceed$bhc_exceed, max, 0)
+exceed$bhc_exceed <- as.numeric(exceed$bhc_exceed)
+
+df <- merge(df, exceed, by = "rssd9001")
+
+
+# create time since announcement variable
+df$rssd9999_working <- as.numeric(as.Date(as.character(df$rssd9999), format = "%Y%m%d"))
+
+# takes bloody long to run for some reason 
+# df$time_announcement <- as.numeric(lapply(df$rssd9999, difftime, "2010-09-30"))
+
+# find number of days since annoucement as variable
+df$time_announcement <- as.numeric(lapply(df$rssd9999_working - as.numeric(as.Date("2010-09-30")),max, 0))
+
+
+# with fixed effects accounted for
+model.continuous <- felm(bhc_avgtradingratio ~ bhc_exceed*time_announcement + dep_roa1 
+               + dep_leverage + dep_lnassets + dep_creditrisk_total3 + dep_cir 
+               + dep_depositratio + dep_loans_REratio + dep_liquidity 
+               + dep_cpp_bankquarter| rssd9001 + rssd9999  , data = df)
+
+summary(model.continuous)
+
+# we notice that for some reason bhc_exceed and time announcement become na
+# this could be due to a multicollinearity issue, which makes sense because bhc exceed and time announcement are
+# derivatives of the bank fixed effect and the time fixed effect. 
+# so, we only look at the interaction term. 
+```

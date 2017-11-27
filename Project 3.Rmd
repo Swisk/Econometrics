@@ -1,0 +1,175 @@
+---
+title: "DSC5101 Project 3"
+output:
+  word_document: default
+  html_document:
+    highlight: tango
+    theme: yeti
+---
+<!--
+comments must be put in an HTML comment form
+-->
+
+```{r set-options, echo=FALSE, cache=FALSE}
+options(width = 100)  # set output width
+```
+
+### Data Preparation
+After combining all the city's data together, import it for this project 
+```{r message=FALSE}
+library("dplyr")
+library(readr)
+df <- read_csv("C:/Users/HEMEIJIE/iCloudDrive/MSBA/MSBA S1/DSC5101/Homework/Project 3/Pumpkin Data RevC.csv")
+df$bulk_flag <- 1
+df$bulk_flag[df$Weight_lbs < 500] <- 0
+df <- df[df$Package!='each',]
+df$Origin <- as.factor(df$Origin)
+df$Package <- as.factor(df$Package)
+df$CityName <- as.factor(df$CityName)
+df$Variety <- as.factor(df$Variety)
+df$ItemSize <- as.factor(df$ItemSize)
+summary(df)
+
+```
+
+### 1. Initial model using uniform net price approach based solely upon pumpkin properties (Variety, Item Size, Colour) 
+
+```{r}
+# essentially the uniform price model (cost based approach plus)
+
+basic.model <- lm(AvgPricePerlb ~  Variety + ItemSize + Color, data = df)
+summary(basic.model)
+
+# add Origin
+basic.model2 <- lm(AvgPricePerlb ~  Variety + Origin + ItemSize + Color, data = df)
+summary(basic.model)
+
+# add Transport Distance
+basic.model3 <- lm(AvgPricePerlb ~  Variety + Origin + DistanceKM + ItemSize + Color, data = df)
+summary(basic.model3)
+
+# try distance square
+basic.model4 <- lm(AvgPricePerlb ~  Variety + Origin + I(DistanceKM^2) + ItemSize + Color, data = df)
+summary(basic.model4)
+
+basic.model5 <- lm(AvgPricePerlb ~  Variety + Origin + I(DistanceKM^1/2) + ItemSize + Color, data = df)
+summary(basic.model5)
+
+# try log(distance)
+basic.model6 <- lm(AvgPricePerlb ~  Variety + Origin + I(log(DistanceKM)) + ItemSize + Color, data = df)
+summary(basic.model6)
+
+```
+
+### 2. Generating a model to investigate the impact of the destination city assuming 3rd degree price discrimination
+
+```{r}
+# Only consider Destination to test 3rd degree price discrimination
+basic.third_degree <- lm(AvgPricePerlb ~  CityName, data = df)
+summary(basic.third_degree)
+
+# Combining the Destination with pumpkin properties 
+basic.model_destination <- lm(AvgPricePerlb ~  CityName + Variety + Origin + DistanceKM + ItemSize + Color, data = df)
+summary(basic.model_destination)
+
+# use perCapitaIncome instead of City Name
+basic.model_percapita <- lm(AvgPricePerlb ~  PerCapitaIncome + Variety + Origin + DistanceKM + ItemSize + Color, data = df)
+summary(basic.model_percapita)
+```
+
+### 3. A model was generated to investigate the effect of 2nd degree pricing based upon package type. 
+```{r}
+# add in package to see if the different packages yield different price per pound
+# bulk discounts
+basic.second_degree <- lm(AvgPricePerlb ~ Package, data = df)
+summary(basic.second_degree)
+
+basic.second_degree2 <- lm(AvgPricePerlb ~ Weight_lbs, data = df)
+summary(basic.second_degree2)
+
+basic.second_degree3 <- lm(AvgPricePerlb ~ I(log(Weight_lbs)), data = df)
+summary(basic.second_degree3)
+
+```
+
+### 4. Using the Interaction of Weight and bulk flag to test the effect of 2nd degree pricing 
+
+```{r}
+# test with bulk flag split
+second_degree.model <- lm(AvgPricePerlb ~ Weight_lbs*bulk_flag, data = df)
+summary(second_degree.model)
+
+second_degree.model2 <- lm(AvgPricePerlb ~ I(log(Weight_lbs))*bulk_flag, data = df)
+summary(second_degree.model2)
+```
+
+#### 5. The final model was generated considering a combination of pumpkin properties, marginal costs (origin and transport distance), secondary degree menu pricing (weight and bulk flag), and third degree price discrimination based upon destination using per capita income instead of city name.
+
+```{r}
+
+# final model to test parameters against covariates
+final.model <- lm(AvgPricePerlb ~ DistanceKM +Weight_lbs*bulk_flag, data = df)
+summary(final.model)
+final.model2 <- lm(AvgPricePerlb ~ Variety+ ItemSize + Color+Origin +DistanceKM +Weight_lbs*bulk_flag, data = df)
+summary(final.model2)
+final.model3 <- lm(AvgPricePerlb ~ CityName+Variety+ ItemSize + Color+Origin +DistanceKM +Weight_lbs*bulk_flag, data = df)
+summary(final.model3)
+
+final.model4 <- lm(AvgPricePerlb ~ Variety+ ItemSize + Color+Weight_lbs*bulk_flag, data = df)
+summary(final.model4)
+
+final.model5 <- lm(AvgPricePerlb ~ Origin+Weight_lbs*bulk_flag, data = df)
+summary(final.model5)
+
+# Final Model
+final.model6 <- lm(AvgPricePerlb ~ PerCapitaIncome+Variety+ ItemSize + Color+Origin +DistanceKM +Weight_lbs*bulk_flag, data = df)
+summary(final.model6)
+
+```
+
+#### 6. Robustness Test
+
+```{r}
+# robustness on approximate weights
+
+validation.df <- df
+
+results <- matrix(nrow = 1501, ncol=length(levels(df$Package)))
+colnames(results) <- levels(df$Package)
+
+# randomly vary weights for each package type
+for (level in levels(df$Package)){
+  
+  # randomly assign weights to bins, as long as they are still 'bulk'
+  if (grepl(level, 'bins')){
+    for (i in 500:2000){
+      validation.df$Weight_lbs[validation.df$Package == level] <- i
+      
+      validation.model <- lm(AvgPricePerlb ~ PerCapitaIncome+Variety+ ItemSize + Color+Origin +DistanceKM +Weight_lbs*bulk_flag, data = validation.df)
+      
+      
+      results[i-499, level] <- summary(validation.model)$adj.r.squared
+    
+    }
+    
+  }else
+    # randomly assign weights , as long as they are still 'non-bulk'
+    for (i in 1:500){
+      validation.df$Weight_lbs[validation.df$Package == level] <- i
+      
+      validation.model <- lm(AvgPricePerlb ~ PerCapitaIncome+Variety+ ItemSize + Color+Origin +DistanceKM +Weight_lbs*bulk_flag, data = validation.df)
+      
+      
+      results[i, level] <- summary(validation.model)$adj.r.squared
+    }
+  
+  # reset data frame
+  validation.df <- df
+}
+
+# see the r squared results after randomly simulating
+output <- apply(results, 2, min, na.rm = TRUE)
+
+output
+```
+
